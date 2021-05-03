@@ -1,0 +1,177 @@
+- name: Nuc Setup
+  hosts: all
+  task:
+    - name: Update apt-get repo and cache
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+      become: yes
+
+    - name: Upgrade all apt packages
+      apt: upgrade=dist force_apt_get=yes
+      become: yes
+
+    - name: Install required packages
+      apt: name={{ item }} state=latest update_cache=yes
+      loop: [
+        'git',
+        'build-essential',
+        'ocaml',
+        'ocamlbuild',
+        'automake',
+        'autoconf',
+        'libtool',
+        'wget',
+        'python-is-python3',
+        'libssl-dev',
+        'git',
+        'cmake',
+        'perl',
+        'libcurl4-openssl-dev',
+        'protobuf-compiler',
+        'libprotobuf-dev',
+        'debhelper',
+        'cmake',
+        'reprepro',
+        'unzip',
+        'python'
+      ]
+      become: yes
+
+#Mise en place de docker
+ - name: Add Docker GPG apt Key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+      become: yes
+
+    - name: Add Docker Repository
+      apt_repository:
+        repo: deb https://download.docker.com/linux/ubuntu focal stable
+        state: present
+      become: yes
+
+    - name: Update apt and install docker-ce
+      apt: update_cache=yes name=docker-ce state=latest
+      become: yes
+
+    - name: Install Docker Module for Python
+      pip:
+        name: docker
+      become: yes
+
+    - name: KernelVersion
+      command: uname -s
+      register: kernelVersion
+
+    - name: Arch
+      command: uname -m
+      register: arch
+
+    - name: Download docker-compose and set permissions
+      get_url:
+        url: "https://github.com/docker/compose/releases/download/1.28.6/docker-compose-{{ kernelVersion.stdout }}-{{ arch.stdout }}"
+        dest: /usr/local/bin/docker-compose
+        mode: +x
+      become: yes
+
+
+#Mise en place de SGX
+    - name: Git clone linux-sgx repo
+        ansible.builtin.git:
+        repo: https://github.com/intel/linux-sgx.git
+        dest: ~/linux-sgx
+        force: yes
+
+    - name: Make preparation
+      ansible.builtin.shell: make preparation
+      args:
+        chdir: ~/linux-sgx
+
+    - name: OS Version
+      command: lsb_release -sr
+      register: osVersion
+
+    - name: OS Codename
+      command: lsb_release -sc
+      register: osCodename
+
+    - name: Copy to system folder
+      ansible.builtin.shell: "{{ item }}"
+      become: yes
+      args:
+        chdir: /home/{{ ansible_user }}/linux-sgx
+      with_items:
+        - cp external/toolset/ubuntu{{ osVersion.stdout }}/as /usr/local/bin
+        - cp external/toolset/ubuntu{{ osVersion.stdout }}/ld /usr/local/bin
+        - cp external/toolset/ubuntu{{ osVersion.stdout }}/ld.gold /usr/local/bin
+        - cp external/toolset/ubuntu{{ osVersion.stdout }}/objdump /usr/local/bin
+
+    - name: Driver
+      get_url:
+        url: "https://download.01.org/intel-sgx/sgx-linux/2.13/distro/ubuntu{{ osVersion.stdout }}-server/sgx_linux_x64_driver_2.11.0_0373e2e.bin"
+        dest: ~/
+        mode: +x
+
+    - name: SDK
+      get_url:
+        url: "https://download.01.org/intel-sgx/sgx-linux/2.13/distro/ubuntu{{ osVersion.stdout }}-server/sgx_linux_x64_sdk_2.13.100.4.bin"
+        dest: ~/
+        mode: +x
+
+    - name: Install SDK
+      shell:
+        cmd: |
+          ./sgx_linux_x64_sdk*.bin << 'EOF'
+          no
+          /opt/intel
+          EOF
+      become: yes
+
+    - name: Source SDK
+      shell: echo "source /opt/intel/sgxsdk/environment" >> ~/.bashrc
+      args:
+        chdir: ~/linux-sgx
+
+    - name: Test if /dev/isgx folder is present
+      stat:
+        path: /dev/isxg
+      register: p
+      tags: isgx_test
+
+    - name: Test if /dev/sgx folder is present
+      stat:
+        path: /dev/sgx
+      register: p2
+      tags: isgx_test
+
+    - name: Fails when sgx device is not present
+      fail:
+        msg: "/dev/isgx OR /dev/sgx does not exist"
+      when: p.stat.exists is false and p2.stat.exists is false
+      tags: isgx_test
+
+    # - debug:
+    #     msg: "{{ p }}"
+
+    - name: Add PSW key
+      apt_key:
+        url: https://download.01.org/intel-sgx/sgx_repo/ubuntu/intel-sgx-deb.key
+        state: present
+      become: yes
+
+    - name: Add PSW repo
+      apt_repository:
+        repo: deb [arch=amd64] https://download.01.org/intel-sgx/sgx_repo/ubuntu {{ osCodename.stdout }} main
+        state: present
+      become: yes
+
+    - name: Install PSW packages
+      apt: name={{ item }} state=latest update_cache=yes
+      loop: [
+        'libsgx-launch',
+        'libsgx-urts',
+        'libsgx-epid',
+        'libsgx-quote-ex',
+        'libsgx-dcap-ql',
+        'libsgx-uae-service'
+      ]
+      become: yes
